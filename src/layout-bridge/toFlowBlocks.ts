@@ -166,6 +166,17 @@ function extractRunFormatting(marks: readonly Mark[], theme?: Theme | null): Run
         };
         break;
       }
+
+      case 'footnoteRef': {
+        const attrs = mark.attrs as { id: string | number; noteType?: string };
+        const id = typeof attrs.id === 'string' ? parseInt(attrs.id, 10) : attrs.id;
+        if (attrs.noteType === 'endnote') {
+          formatting.endnoteRefId = id;
+        } else {
+          formatting.footnoteRefId = id;
+        }
+        break;
+      }
     }
   }
 
@@ -380,6 +391,8 @@ function convertParagraphAttrs(pmAttrs: PMParagraphAttrs): ParagraphAttrs {
   // Indentation - handle list item fallback calculation
   // For list items without explicit indentation, calculate based on level
   let indentLeft = pmAttrs.indentLeft;
+  let indentFirstLine = pmAttrs.indentFirstLine;
+  let hangingIndent = pmAttrs.hangingIndent;
   if (pmAttrs.numPr?.numId && indentLeft == null) {
     // Fallback: calculate indentation based on level
     // Each level indents 0.5 inch (720 twips) more
@@ -387,9 +400,14 @@ function convertParagraphAttrs(pmAttrs: PMParagraphAttrs): ParagraphAttrs {
     // Base indentation: 0.5 inch (720 twips) per level
     // Level 0 = 720 twips, Level 1 = 1440 twips, etc.
     indentLeft = (level + 1) * 720;
+    // Default hanging indent of 360 twips for the list marker
+    if (indentFirstLine == null) {
+      indentFirstLine = -360;
+      hangingIndent = true;
+    }
   }
 
-  if (indentLeft != null || pmAttrs.indentRight != null || pmAttrs.indentFirstLine != null) {
+  if (indentLeft != null || pmAttrs.indentRight != null || indentFirstLine != null) {
     attrs.indent = {};
     if (indentLeft != null) {
       attrs.indent.left = twipsToPixels(indentLeft);
@@ -397,12 +415,12 @@ function convertParagraphAttrs(pmAttrs: PMParagraphAttrs): ParagraphAttrs {
     if (pmAttrs.indentRight != null) {
       attrs.indent.right = twipsToPixels(pmAttrs.indentRight);
     }
-    if (pmAttrs.indentFirstLine != null) {
-      if (pmAttrs.hangingIndent) {
+    if (indentFirstLine != null) {
+      if (hangingIndent) {
         // Hanging indent: indentFirstLine is stored as negative, convert to positive for rendering
-        attrs.indent.hanging = Math.abs(twipsToPixels(pmAttrs.indentFirstLine));
+        attrs.indent.hanging = Math.abs(twipsToPixels(indentFirstLine));
       } else {
-        attrs.indent.firstLine = twipsToPixels(pmAttrs.indentFirstLine);
+        attrs.indent.firstLine = twipsToPixels(indentFirstLine);
       }
     }
   }
@@ -423,7 +441,7 @@ function convertParagraphAttrs(pmAttrs: PMParagraphAttrs): ParagraphAttrs {
       }
       // Convert size from eighths of a point to pixels
       // 1 point = 1.333px at 96 DPI, size is in eighths of a point
-      const widthPx = border.size ? Math.max(1, Math.ceil((border.size / 8) * 1.333)) : 1;
+      const widthPx = border.size ? Math.max(1, Math.round((border.size / 8) * 1.333)) : 1;
       // Convert color
       let color = '#000000';
       if (border.color?.rgb) {
@@ -476,6 +494,12 @@ function convertParagraphAttrs(pmAttrs: PMParagraphAttrs): ParagraphAttrs {
   if (pmAttrs.keepLines) {
     attrs.keepLines = true;
   }
+  if (pmAttrs.contextualSpacing) {
+    attrs.contextualSpacing = true;
+  }
+  if (pmAttrs.styleId) {
+    attrs.styleId = pmAttrs.styleId;
+  }
 
   // List properties
   if (pmAttrs.numPr) {
@@ -489,6 +513,22 @@ function convertParagraphAttrs(pmAttrs: PMParagraphAttrs): ParagraphAttrs {
   }
   if (pmAttrs.listIsBullet != null) {
     attrs.listIsBullet = pmAttrs.listIsBullet;
+  }
+
+  // Default font for empty paragraph measurement (from style's rPr / pPr/rPr)
+  const dtf = pmAttrs.defaultTextFormatting as
+    | { fontSize?: number; fontFamily?: { ascii?: string; hAnsi?: string } }
+    | undefined;
+  if (dtf) {
+    if (dtf.fontSize != null) {
+      // fontSize in TextFormatting is in half-points, convert to points
+      attrs.defaultFontSize = dtf.fontSize / 2;
+    }
+    if (dtf.fontFamily) {
+      attrs.defaultFontFamily = (dtf.fontFamily.ascii || dtf.fontFamily.hAnsi) as
+        | string
+        | undefined;
+    }
   }
 
   return attrs;
@@ -856,16 +896,17 @@ export function toFlowBlocks(doc: PMNode, options: ToFlowBlocksOptions = {}): Fl
         break;
 
       case 'horizontalRule':
-        // Could be treated as a page break or separator
-        const pageBreak: PageBreakBlock = {
+      case 'pageBreak': {
+        const pb: PageBreakBlock = {
           kind: 'pageBreak',
           id: nextBlockId(),
           pmStart: pos,
           pmEnd: pos + node.nodeSize,
         };
-        blocks.push(pageBreak);
+        blocks.push(pb);
         listCounters.clear();
         break;
+      }
     }
   });
 

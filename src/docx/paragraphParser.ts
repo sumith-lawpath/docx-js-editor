@@ -542,6 +542,11 @@ export function parseParagraphProperties(
     formatting.pageBreakBefore = parseBooleanElement(pageBreakBefore);
   }
 
+  const contextualSpacing = findChild(pPr, 'w', 'contextualSpacing');
+  if (contextualSpacing) {
+    formatting.contextualSpacing = parseBooleanElement(contextualSpacing);
+  }
+
   // === Numbering Properties (List Info) ===
   const numPr = findChild(pPr, 'w', 'numPr');
   if (numPr) {
@@ -1058,9 +1063,21 @@ export function parseParagraph(
   // This reduces fragmentation (e.g., 252 tiny runs → a few larger runs)
   paragraph.content = consolidateParagraphContent(rawContent);
 
-  // Compute list rendering if this is a list item
-  if (paragraph.formatting?.numPr && numbering) {
-    const { numId, ilvl = 0 } = paragraph.formatting.numPr;
+  // Compute list rendering if this is a list item.
+  // numPr can come from inline pPr or from the referenced paragraph style.
+  let effectiveNumPr = paragraph.formatting?.numPr;
+  if (!effectiveNumPr && paragraph.formatting?.styleId && styles) {
+    const style = styles.get(paragraph.formatting.styleId);
+    if (style?.pPr?.numPr) {
+      effectiveNumPr = style.pPr.numPr;
+      // Store it on the paragraph formatting so downstream code sees it
+      if (!paragraph.formatting) paragraph.formatting = {};
+      paragraph.formatting.numPr = effectiveNumPr;
+    }
+  }
+
+  if (effectiveNumPr && numbering) {
+    const { numId, ilvl = 0 } = effectiveNumPr;
     if (numId !== undefined && numId !== 0) {
       const level = numbering.getLevel(numId, ilvl);
       if (level) {
@@ -1072,23 +1089,33 @@ export function parseParagraph(
           numFmt: level.numFmt,
         };
 
-        // Apply level's paragraph properties (indentation)
-        // For list items, the numbering definition's indentation should control
-        // the layout, so we override paragraph-level indentation with level's
+        // Apply level's paragraph properties (indentation) as defaults.
+        // Per OOXML spec, direct w:ind on the paragraph overrides numbering
+        // level indent — only use numbering indent as fallback.
         if (level.pPr) {
           if (!paragraph.formatting) {
             paragraph.formatting = {};
           }
-          // Apply level indent - this overrides any paragraph-level indent
-          // since list indentation should come from the numbering definition
-          if (level.pPr.indentLeft !== undefined) {
+          const directInd = pPr ? findChild(pPr, 'w', 'ind') : null;
+          const hasDirectLeft =
+            directInd != null &&
+            (getAttribute(directInd, 'w', 'left') !== null ||
+              getAttribute(directInd, 'w', 'start') !== null);
+          const hasDirectFirstLineOrHanging =
+            directInd != null &&
+            (getAttribute(directInd, 'w', 'firstLine') !== null ||
+              getAttribute(directInd, 'w', 'hanging') !== null);
+
+          if (!hasDirectLeft && level.pPr.indentLeft !== undefined) {
             paragraph.formatting.indentLeft = level.pPr.indentLeft;
           }
-          if (level.pPr.indentFirstLine !== undefined) {
-            paragraph.formatting.indentFirstLine = level.pPr.indentFirstLine;
-          }
-          if (level.pPr.hangingIndent !== undefined) {
-            paragraph.formatting.hangingIndent = level.pPr.hangingIndent;
+          if (!hasDirectFirstLineOrHanging) {
+            if (level.pPr.indentFirstLine !== undefined) {
+              paragraph.formatting.indentFirstLine = level.pPr.indentFirstLine;
+            }
+            if (level.pPr.hangingIndent !== undefined) {
+              paragraph.formatting.hangingIndent = level.pPr.hangingIndent;
+            }
           }
         }
       }

@@ -326,6 +326,11 @@ function renderBlockImage(run: ImageRun, doc: Document): HTMLElement {
   img.src = run.src;
   img.width = run.width;
   img.height = run.height;
+  // Global CSS reset (Tailwind preflight) sets img { display: block },
+  // which makes text-align: center on the container ineffective.
+  // Use margin: auto on the img itself to center it.
+  img.style.marginLeft = 'auto';
+  img.style.marginRight = 'auto';
   if (run.alt) {
     img.alt = run.alt;
   }
@@ -780,10 +785,9 @@ export function renderParagraphFragment(
     fragmentEl.dataset.continuesOnNext = 'true';
   }
 
-  // NOTE: Floating image exclusion zones (options.floatingImageInfo) and
-  // fragment Y position (options.fragmentContentY) are accepted but not used.
-  // Text wrapping around floating images is not yet implemented at measurement time.
-  // Floating images skip during inline rendering - they're rendered at page level.
+  // Text wrapping around floating images is handled at measurement time via
+  // per-line leftOffset/rightOffset in MeasuredLine. Floating images themselves
+  // skip inline rendering - they're rendered at page level.
   for (const run of block.runs) {
     if (isImageRun(run)) {
       const isFloating =
@@ -940,8 +944,22 @@ export function renderParagraphFragment(
     const lineLeftOffset = line.leftOffset ?? 0;
     const lineRightOffset = line.rightOffset ?? 0;
 
+    // For first line, adjust available width for hanging/firstLine indent
+    // Measurement uses: baseFirstLineWidth = bodyContentWidth - (firstLine - hanging)
+    // So hanging gives MORE width, firstLine gives LESS width
+    let lineAvailableWidth = availableWidth;
+    if (isFirstLine) {
+      const hasHangingIndent = indent?.hanging && indent.hanging > 0;
+      const hasFirstLineIndent = indent?.firstLine && indent.firstLine > 0;
+      if (hasHangingIndent && indent?.hanging) {
+        lineAvailableWidth = availableWidth + indent.hanging;
+      } else if (hasFirstLineIndent && indent?.firstLine) {
+        lineAvailableWidth = availableWidth - indent.firstLine;
+      }
+    }
+
     const lineEl = renderLine(block, line, alignment, doc, {
-      availableWidth: availableWidth - lineLeftOffset - lineRightOffset,
+      availableWidth: lineAvailableWidth - lineLeftOffset - lineRightOffset,
       isLastLine,
       isFirstLine,
       paragraphEndsWithLineBreak,
@@ -1039,16 +1057,18 @@ function renderListMarker(
   span.className = 'layout-list-marker';
   span.style.display = 'inline-block';
 
-  // Add the marker text with a trailing space for consistent separation
-  // The tab character after the marker in Word provides this spacing
-  span.textContent = marker + '\u00A0'; // Non-breaking space ensures gap
+  // In Word, the marker character is followed by a tab that extends to the
+  // text indent position. We emulate this by left-aligning the marker within
+  // the hanging indent box — the marker sits at the start and the remaining
+  // space acts as the tab gap, just like Word.
+  span.textContent = marker;
 
-  // The marker box should fill the hanging indent space
+  // The marker box fills the hanging indent space
   const hanging = indent?.hanging ?? 24; // Default 24px if not specified
 
-  // Use min-width so short markers fill the space, but long markers can extend
+  // min-width so short markers fill the space; long markers can extend
   span.style.minWidth = `${hanging}px`;
-  span.style.textAlign = 'right'; // Right-align so marker stays close to text
+  span.style.textAlign = 'left';
   span.style.boxSizing = 'border-box';
 
   return span;

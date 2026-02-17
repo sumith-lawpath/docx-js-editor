@@ -310,10 +310,9 @@
 /* Individual selection overlay rectangle */
 .docx-selection-overlay-rect {
   position: absolute;
-  background-color: rgba(26, 115, 232, 0.3);
+  background-color: rgba(66, 133, 244, 0.25);
   pointer-events: none;
   user-select: none;
-  mix-blend-mode: multiply;
 }
 
 /* ============================================================================
@@ -375,9 +374,17 @@
  * ============================================================================ */
 
 .layout-table-cell-selected {
+  position: relative;
   outline: 2px solid rgba(66, 133, 244, 0.6);
   outline-offset: -2px;
-  background-color: rgba(66, 133, 244, 0.12) !important;
+}
+
+.layout-table-cell-selected::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-color: rgba(66, 133, 244, 0.15);
+  pointer-events: none;
 }
 
 /* ============================================================================
@@ -417,4 +424,19 @@
 .layout-table-edge-handle-right:hover,
 .layout-table-edge-handle-right.dragging {
   background-color: rgba(66, 133, 244, 0.6);
+}
+
+/* ============================================================================
+ * RESPONSIVE: Hide document outline on small screens
+ * ============================================================================ */
+
+/* Outline heading hover */
+.docx-outline-heading-btn:hover {
+  background-color: #f1f3f4;
+}
+
+@media (max-width: 1280px) {
+  .docx-outline-nav {
+    display: none !important;
+  }
 }

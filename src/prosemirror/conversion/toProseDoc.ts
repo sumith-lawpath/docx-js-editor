@@ -74,6 +74,10 @@ export function toProseDoc(document: Document, options?: ToProseDocOptions): PMN
       for (const tb of textBoxes) {
         nodes.push(convertTextBox(tb, styleResolver));
       }
+      // If any run in this paragraph contains a page break, emit a pageBreak node after
+      if (paragraphHasPageBreak(block)) {
+        nodes.push(schema.node('pageBreak'));
+      }
     } else if (block.type === 'table') {
       const pmTable = convertTable(block, styleResolver);
       nodes.push(pmTable);
@@ -102,6 +106,7 @@ function convertParagraph(
 ): PMNode {
   const attrs = paragraphFormattingToAttrs(paragraph, styleResolver);
   const inlineNodes: PMNode[] = [];
+  let bookmarksArr: Array<{ id: number; name: string }> | undefined;
 
   // Track active comment ranges for this paragraph
   const commentIds = activeCommentIds ?? new Set<number>();
@@ -113,12 +118,12 @@ function convertParagraph(
     styleRunFormatting = resolved.runFormatting;
   }
 
-  // Merge in paragraph-level run properties and extra formatting (e.g., table style conditional rPr)
-  const withParagraphRunProps = mergeTextFormatting(
-    styleRunFormatting,
-    paragraph.formatting?.runProperties
-  );
-  const mergedStyleRunFormatting = mergeTextFormatting(withParagraphRunProps, extraRunFormatting);
+  // NOTE: paragraph.formatting?.runProperties is the paragraph mark formatting (pPr/rPr).
+  // Per ECMA-376, this only applies to the paragraph mark glyph (¶), NOT to text runs.
+  // Style-level rPr (from styleResolver) already provides default run formatting.
+
+  // Merge in extra formatting (e.g., table style conditional rPr)
+  const mergedStyleRunFormatting = mergeTextFormatting(styleRunFormatting, extraRunFormatting);
 
   for (const content of paragraph.content) {
     if (content.type === 'commentRangeStart') {
@@ -135,7 +140,7 @@ function convertParagraph(
       const linkNodes = convertHyperlink(content, mergedStyleRunFormatting, styleResolver);
       inlineNodes.push(...linkNodes);
     } else if (content.type === 'simpleField' || content.type === 'complexField') {
-      const fieldNode = convertField(content);
+      const fieldNode = convertField(content, mergedStyleRunFormatting);
       if (fieldNode) inlineNodes.push(fieldNode);
     } else if (content.type === 'inlineSdt') {
       const sdtNode = convertInlineSdt(content, mergedStyleRunFormatting, styleResolver);
@@ -160,7 +165,15 @@ function convertParagraph(
       const mathNode = convertMathEquation(content);
       if (mathNode) inlineNodes.push(mathNode);
     }
-    // Skip other content types for now (bookmarks, etc.)
+    // Collect bookmarkStart entries for round-trip
+    if (content.type === 'bookmarkStart') {
+      if (!bookmarksArr) bookmarksArr = [];
+      bookmarksArr.push({ id: content.id, name: content.name });
+    }
+  }
+
+  if (bookmarksArr) {
+    attrs.bookmarks = bookmarksArr;
   }
 
   return schema.node('paragraph', attrs, inlineNodes);
@@ -239,6 +252,8 @@ function paragraphFormattingToAttrs(
     listNumFmt: paragraph.listRendering?.numFmt,
     listIsBullet: paragraph.listRendering?.isBullet,
     listMarker: paragraph.listRendering?.marker,
+    // Store original inline formatting for lossless serialization round-trip
+    _originalFormatting: formatting || undefined,
   };
 
   // If we have a style resolver, resolve the style and get base properties
@@ -265,6 +280,7 @@ function paragraphFormattingToAttrs(
     attrs.pageBreakBefore = formatting?.pageBreakBefore ?? stylePpr?.pageBreakBefore;
     attrs.keepNext = formatting?.keepNext ?? stylePpr?.keepNext;
     attrs.keepLines = formatting?.keepLines ?? stylePpr?.keepLines;
+    attrs.contextualSpacing = formatting?.contextualSpacing ?? stylePpr?.contextualSpacing;
 
     // Outline level (for TOC)
     attrs.outlineLevel = formatting?.outlineLevel ?? stylePpr?.outlineLevel;
@@ -897,10 +913,17 @@ function convertTableCell(
 
 /**
  * Convert a SimpleField or ComplexField to a ProseMirror field node.
+ * Preserves run formatting (bold, fontSize, color, etc.) as PM marks.
+ * Accepts styleFormatting so fields inherit paragraph-level formatting
+ * (same as convertRun does for regular text runs).
  */
-function convertField(field: SimpleField | ComplexField): PMNode | null {
-  // Extract display text from field content/result
+function convertField(
+  field: SimpleField | ComplexField,
+  styleFormatting?: TextFormatting
+): PMNode | null {
+  // Extract display text and formatting from field content/result
   let displayText = '';
+  let fieldFormatting: TextFormatting | undefined;
   const runs = field.type === 'simpleField' ? field.content : field.fieldResult;
   if (runs) {
     for (const r of runs) {
@@ -908,18 +931,31 @@ function convertField(field: SimpleField | ComplexField): PMNode | null {
         for (const c of r.content) {
           if (c.type === 'text') displayText += c.text;
         }
+        // Use formatting from the first run that has it
+        if (!fieldFormatting && r.formatting) {
+          fieldFormatting = r.formatting;
+        }
       }
     }
   }
 
-  return schema.node('field', {
-    fieldType: field.fieldType,
-    instruction: field.instruction,
-    displayText,
-    fieldKind: field.type === 'simpleField' ? 'simple' : 'complex',
-    fldLock: field.fldLock ?? false,
-    dirty: field.dirty ?? false,
-  });
+  // Merge style formatting with field run formatting (inline takes precedence)
+  const mergedFormatting = mergeTextFormatting(styleFormatting, fieldFormatting);
+  const marks = textFormattingToMarks(mergedFormatting);
+
+  return schema.node(
+    'field',
+    {
+      fieldType: field.fieldType,
+      instruction: field.instruction,
+      displayText,
+      fieldKind: field.type === 'simpleField' ? 'simple' : 'complex',
+      fldLock: field.fldLock ?? false,
+      dirty: field.dirty ?? false,
+    },
+    undefined,
+    marks
+  );
 }
 
 /**
@@ -986,8 +1022,13 @@ function convertRun(
 
   // Merge style formatting with run's inline formatting
   // Inline formatting takes precedence over style formatting
+  //
+  // Use getRunStyleOwnProperties (not resolveRunStyle) to avoid docDefaults
+  // from the character style overriding paragraph style properties.
+  // The styleFormatting parameter already includes docDefaults from paragraph
+  // style resolution, so we only need the character style's own properties.
   const runStyleFormatting = run.formatting?.styleId
-    ? styleResolver?.resolveRunStyle(run.formatting.styleId)
+    ? styleResolver?.getRunStyleOwnProperties(run.formatting.styleId)
     : undefined;
   const mergedFormatting = mergeTextFormatting(
     mergeTextFormatting(styleFormatting, runStyleFormatting),
@@ -1291,9 +1332,10 @@ function convertHyperlink(
 ): PMNode[] {
   const nodes: PMNode[] = [];
 
-  // Create link mark
+  // Create link mark — internal anchors use #bookmarkName format
+  const href = hyperlink.href || (hyperlink.anchor ? `#${hyperlink.anchor}` : '');
   const linkMark = schema.mark('hyperlink', {
-    href: hyperlink.href || hyperlink.anchor || '',
+    href,
     tooltip: hyperlink.tooltip,
     rId: hyperlink.rId,
   });
@@ -1674,6 +1716,22 @@ export function headerFooterToProseDoc(
   }
 
   return schema.node('doc', null, nodes);
+}
+
+/**
+ * Check if a paragraph contains a page break in any of its runs
+ */
+function paragraphHasPageBreak(paragraph: Paragraph): boolean {
+  for (const item of paragraph.content) {
+    if (item.type === 'run') {
+      for (const content of (item as Run).content) {
+        if (content.type === 'break' && content.breakType === 'page') {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
 }
 
 /**

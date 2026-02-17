@@ -98,6 +98,9 @@ function extractBlocks(pmDoc: PMNode): (Paragraph | Table)[] {
     } else if (node.type.name === 'textBox') {
       // Convert text box back to a paragraph containing a shape with text body
       blocks.push(convertPMTextBox(node));
+    } else if (node.type.name === 'pageBreak') {
+      // Convert page break node to a paragraph with a page break run
+      blocks.push(createPageBreakParagraph());
     }
   });
 
@@ -105,11 +108,38 @@ function extractBlocks(pmDoc: PMNode): (Paragraph | Table)[] {
 }
 
 /**
+ * Create a paragraph containing only a page break run (for DOCX serialization)
+ */
+function createPageBreakParagraph(): Paragraph {
+  const breakContent: BreakContent = { type: 'break', breakType: 'page' };
+  const run: Run = { type: 'run', content: [breakContent] };
+  return {
+    type: 'paragraph',
+    content: [run],
+  };
+}
+
+/**
  * Convert a ProseMirror paragraph node to our Paragraph type
  */
 function convertPMParagraph(node: PMNode): Paragraph {
   const attrs = node.attrs as ParagraphAttrs;
-  const content = insertCommentRanges(extractParagraphContent(node), node);
+  let content = insertCommentRanges(extractParagraphContent(node), node);
+
+  // Emit BookmarkStart/End from bookmarks attr (for TOC anchors, cross-references)
+  const bookmarks = attrs.bookmarks as Array<{ id: number; name: string }> | undefined;
+  if (bookmarks && bookmarks.length > 0) {
+    const starts: import('../../types/content').ParagraphContent[] = bookmarks.map((b) => ({
+      type: 'bookmarkStart' as const,
+      id: b.id,
+      name: b.name,
+    }));
+    const ends: import('../../types/content').ParagraphContent[] = bookmarks.map((b) => ({
+      type: 'bookmarkEnd' as const,
+      id: b.id,
+    }));
+    content = [...starts, ...content, ...ends];
+  }
 
   const paragraph: Paragraph = {
     type: 'paragraph',
@@ -196,7 +226,42 @@ function insertCommentRanges(content: ParagraphContent[], paragraph: PMNode): Pa
 }
 
 function paragraphAttrsToFormatting(attrs: ParagraphAttrs): ParagraphFormatting | undefined {
-  // Check if any formatting is present
+  // If we have the original inline formatting from the DOCX, use it as a base
+  // for lossless round-trip. This preserves properties like contextualSpacing,
+  // widowControl, beforeAutospacing, runProperties, etc. that aren't tracked
+  // as individual PM attrs. It also avoids "inlining" style-inherited values
+  // (spacing, indentation, numPr) which would override style definitions
+  // and break rendering in Word/Pages/Google Docs.
+  //
+  // We then apply overrides for any properties the user may have changed
+  // via editor commands (alignment, list toggle, etc.).
+  if (attrs._originalFormatting) {
+    const orig = attrs._originalFormatting;
+    const result = { ...orig };
+
+    // Override properties that user may have changed via editor commands.
+    // Only override if the PM attr differs from the original value.
+    if (attrs.alignment !== (orig.alignment || undefined)) {
+      result.alignment = attrs.alignment || undefined;
+    }
+    if (attrs.numPr !== orig.numPr) {
+      // Use JSON comparison since these are objects
+      if (JSON.stringify(attrs.numPr) !== JSON.stringify(orig.numPr)) {
+        result.numPr = attrs.numPr || undefined;
+      }
+    }
+    if (attrs.styleId !== (orig.styleId || undefined)) {
+      result.styleId = attrs.styleId || undefined;
+    }
+    if (attrs.pageBreakBefore !== (orig.pageBreakBefore || undefined)) {
+      result.pageBreakBefore = attrs.pageBreakBefore || undefined;
+    }
+
+    return result;
+  }
+
+  // Fallback: reconstruct formatting from individual attrs (e.g. for
+  // newly created paragraphs that don't have _originalFormatting)
   const hasFormatting =
     attrs.alignment ||
     attrs.spaceBefore ||
@@ -210,7 +275,8 @@ function paragraphAttrsToFormatting(attrs: ParagraphAttrs): ParagraphFormatting 
     attrs.borders ||
     attrs.shading ||
     attrs.tabs ||
-    attrs.outlineLevel != null;
+    attrs.outlineLevel != null ||
+    attrs.contextualSpacing;
 
   if (!hasFormatting) {
     return undefined;
@@ -232,6 +298,7 @@ function paragraphAttrsToFormatting(attrs: ParagraphAttrs): ParagraphFormatting 
     shading: attrs.shading || undefined,
     tabs: attrs.tabs || undefined,
     outlineLevel: attrs.outlineLevel ?? undefined,
+    contextualSpacing: attrs.contextualSpacing || undefined,
   };
 }
 
@@ -323,7 +390,9 @@ function extractParagraphContent(paragraph: PMNode): ParagraphContent[] {
       // Start or continue hyperlink
       const linkKey = getLinkKey(linkMark);
 
-      if (currentHyperlink && currentHyperlink.href === linkKey) {
+      const currentKey =
+        currentHyperlink?.href || (currentHyperlink?.anchor ? `#${currentHyperlink.anchor}` : '');
+      if (currentHyperlink && currentKey === linkKey) {
         // Continue current hyperlink
         addNodeToHyperlink(currentHyperlink, node);
       } else {
@@ -404,7 +473,7 @@ function extractParagraphContent(paragraph: PMNode): ParagraphContent[] {
         currentRun = null;
         currentMarksKey = null;
       }
-      content.push(createFieldFromNode(node));
+      content.push(createFieldFromNode(node, node.marks));
     } else if (node.type.name === 'sdt') {
       // SDT ends current run and emits an InlineSdt content item
       if (currentRun) {
@@ -459,9 +528,19 @@ function getMarksKey(marks: readonly Mark[]): string {
  * Create a Hyperlink from a link mark
  */
 function createHyperlink(linkMark: Mark): Hyperlink {
+  const href = linkMark.attrs.href as string;
+  // Internal bookmark links use the anchor property in OOXML
+  if (href?.startsWith('#')) {
+    return {
+      type: 'hyperlink',
+      anchor: href.substring(1),
+      tooltip: linkMark.attrs.tooltip || undefined,
+      children: [],
+    };
+  }
   return {
     type: 'hyperlink',
-    href: linkMark.attrs.href,
+    href,
     tooltip: linkMark.attrs.tooltip || undefined,
     rId: linkMark.attrs.rId || undefined,
     children: [],
@@ -540,7 +619,7 @@ function createTabRun(): Run {
 /**
  * Create a SimpleField or ComplexField from a PM field node
  */
-function createFieldFromNode(node: PMNode): SimpleField | ComplexField {
+function createFieldFromNode(node: PMNode, marks?: readonly Mark[]): SimpleField | ComplexField {
   const attrs = node.attrs as {
     fieldType: string;
     instruction: string;
@@ -550,9 +629,28 @@ function createFieldFromNode(node: PMNode): SimpleField | ComplexField {
     dirty: boolean;
   };
 
+  const formatting = marks && marks.length > 0 ? marksToTextFormatting(marks) : undefined;
+
+  // Provide fallback display text for dynamic fields so <w:t> is never empty
+  let displayText = attrs.displayText || '';
+  if (!displayText) {
+    switch (attrs.fieldType) {
+      case 'PAGE':
+        displayText = '1';
+        break;
+      case 'NUMPAGES':
+        displayText = '1';
+        break;
+      default:
+        displayText = ' ';
+        break;
+    }
+  }
+
   const displayRun: Run = {
     type: 'run',
-    content: [{ type: 'text' as const, text: attrs.displayText || '' }],
+    content: [{ type: 'text' as const, text: displayText }],
+    ...(formatting && Object.keys(formatting).length > 0 ? { formatting } : {}),
   };
 
   if (attrs.fieldKind === 'complex') {
@@ -632,6 +730,16 @@ function createInlineSdtFromNode(node: PMNode): InlineSdt {
 function createImageRun(node: PMNode): Run {
   const attrs = node.attrs as ImageAttrs;
 
+  // Determine wrap type from attrs (default: inline)
+  const wrapType = attrs.wrapType || 'inline';
+  const PX_TO_EMU = 914400 / 96;
+
+  const wrap: import('../../types/content').ImageWrap = { type: wrapType };
+  if (attrs.distTop !== undefined) wrap.distT = Math.round(attrs.distTop * PX_TO_EMU);
+  if (attrs.distBottom !== undefined) wrap.distB = Math.round(attrs.distBottom * PX_TO_EMU);
+  if (attrs.distLeft !== undefined) wrap.distL = Math.round(attrs.distLeft * PX_TO_EMU);
+  if (attrs.distRight !== undefined) wrap.distR = Math.round(attrs.distRight * PX_TO_EMU);
+
   const image: Image = {
     type: 'image',
     rId: attrs.rId || '',
@@ -642,8 +750,31 @@ function createImageRun(node: PMNode): Run {
       width: attrs.width || 0,
       height: attrs.height || 0,
     },
-    wrap: { type: 'inline' },
+    wrap,
   };
+
+  // Round-trip floating image position (ImagePositionAttrs uses loose strings;
+  // cast to the strict OOXML union types for the Document model)
+  if (attrs.position?.horizontal && attrs.position?.vertical) {
+    const pos = attrs.position;
+    type HRelativeTo = import('../../types/content').ImagePosition['horizontal']['relativeTo'];
+    type HAlignment = import('../../types/content').ImagePosition['horizontal']['alignment'];
+    type VRelativeTo = import('../../types/content').ImagePosition['vertical']['relativeTo'];
+    type VAlignment = import('../../types/content').ImagePosition['vertical']['alignment'];
+
+    image.position = {
+      horizontal: {
+        relativeTo: (pos.horizontal!.relativeTo || 'column') as HRelativeTo,
+        alignment: pos.horizontal!.align as HAlignment,
+        posOffset: pos.horizontal!.posOffset,
+      },
+      vertical: {
+        relativeTo: (pos.vertical!.relativeTo || 'paragraph') as VRelativeTo,
+        alignment: pos.vertical!.align as VAlignment,
+        posOffset: pos.vertical!.posOffset,
+      },
+    };
+  }
 
   // Round-trip border/outline
   if (attrs.borderWidth && attrs.borderWidth > 0) {
@@ -762,10 +893,12 @@ function marksToTextFormatting(marks: readonly Mark[]): TextFormatting {
     switch (mark.type.name) {
       case 'bold':
         formatting.bold = true;
+        formatting.boldCs = true;
         break;
 
       case 'italic':
         formatting.italic = true;
+        formatting.italicCs = true;
         break;
 
       case 'underline': {
@@ -802,6 +935,7 @@ function marksToTextFormatting(marks: readonly Mark[]): TextFormatting {
 
       case 'fontSize':
         formatting.fontSize = mark.attrs.size;
+        formatting.fontSizeCs = mark.attrs.size;
         break;
 
       case 'fontFamily': {
@@ -809,6 +943,8 @@ function marksToTextFormatting(marks: readonly Mark[]): TextFormatting {
         formatting.fontFamily = {
           ascii: attrs.ascii,
           hAnsi: attrs.hAnsi,
+          // Set cs to match ascii for Complex Script compatibility
+          cs: attrs.ascii || undefined,
           // asciiTheme needs to be cast to the proper type or undefined
           asciiTheme: attrs.asciiTheme as
             | 'majorAscii'

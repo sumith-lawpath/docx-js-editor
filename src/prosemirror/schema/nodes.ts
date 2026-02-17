@@ -8,6 +8,7 @@
 
 import type {
   ParagraphAlignment,
+  ParagraphFormatting,
   LineSpacingRule,
   BorderSpec,
   ShadingProperties,
@@ -75,6 +76,8 @@ export interface ParagraphAttrs {
   pageBreakBefore?: boolean;
   keepNext?: boolean;
   keepLines?: boolean;
+  /** Contextual spacing — suppress space between same-style paragraphs */
+  contextualSpacing?: boolean;
 
   // Default text formatting for empty paragraphs (persists when navigating away)
   // Maps to OOXML pPr/rPr (paragraph's default run properties)
@@ -85,6 +88,13 @@ export interface ParagraphAttrs {
 
   // Outline level for TOC (0-9)
   outlineLevel?: number;
+
+  // Bookmarks on this paragraph (for TOC anchors, cross-references)
+  bookmarks?: Array<{ id: number; name: string }>;
+
+  /** Original inline paragraph formatting from DOCX (pre-style-resolution).
+   *  Used by fromProseDoc for lossless round-trip serialization. */
+  _originalFormatting?: ParagraphFormatting;
 }
 
 /**

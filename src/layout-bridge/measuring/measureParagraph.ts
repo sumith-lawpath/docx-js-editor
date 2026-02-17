@@ -14,6 +14,7 @@ import type {
   TabRun,
   ImageRun,
   LineBreakRun,
+  FieldRun,
   ParagraphSpacing,
 } from '../../layout-engine/types';
 
@@ -152,9 +153,10 @@ function calculateTypographyMetrics(
  */
 function calculateEmptyParagraphMetrics(
   fontSize: number,
-  spacing?: ParagraphSpacing
+  spacing?: ParagraphSpacing,
+  fontFamily?: string
 ): LineTypography {
-  const metrics = getFontMetrics({ fontSize, fontFamily: DEFAULT_FONT_FAMILY });
+  const metrics = getFontMetrics({ fontSize, fontFamily: fontFamily ?? DEFAULT_FONT_FAMILY });
   return calculateTypographyMetrics(fontSize, spacing, metrics);
 }
 
@@ -184,6 +186,13 @@ function isImageRun(run: Run): run is ImageRun {
  */
 function isLineBreakRun(run: Run): run is LineBreakRun {
   return run.kind === 'lineBreak';
+}
+
+/**
+ * Check if a run is a field run
+ */
+function isFieldRun(run: Run): run is FieldRun {
+  return run.kind === 'field';
 }
 
 /**
@@ -302,7 +311,9 @@ export function measureParagraph(
 
   // Handle empty paragraph
   if (runs.length === 0) {
-    const emptyMetrics = calculateEmptyParagraphMetrics(DEFAULT_FONT_SIZE, spacing);
+    const emptyFontSize = attrs?.defaultFontSize ?? DEFAULT_FONT_SIZE;
+    const emptyFontFamily = attrs?.defaultFontFamily ?? DEFAULT_FONT_FAMILY;
+    const emptyMetrics = calculateEmptyParagraphMetrics(emptyFontSize, spacing, emptyFontFamily);
     lines.push({
       fromRun: 0,
       fromChar: 0,
@@ -322,8 +333,9 @@ export function measureParagraph(
   // Check for empty text run only
   if (runs.length === 1 && isTextRun(runs[0]) && isEmptyTextRun(runs[0] as TextRun)) {
     const run = runs[0] as TextRun;
-    const fontSize = run.fontSize ?? DEFAULT_FONT_SIZE;
-    const emptyMetrics = calculateEmptyParagraphMetrics(fontSize, spacing);
+    const fontSize = run.fontSize ?? attrs?.defaultFontSize ?? DEFAULT_FONT_SIZE;
+    const fontFamily = run.fontFamily ?? attrs?.defaultFontFamily ?? DEFAULT_FONT_FAMILY;
+    const emptyMetrics = calculateEmptyParagraphMetrics(fontSize, spacing, fontFamily);
 
     lines.push({
       fromRun: 0,
@@ -518,6 +530,32 @@ export function measureParagraph(
       }
 
       currentLine.width += imageWidth;
+      currentLine.toRun = runIndex;
+      currentLine.toChar = 1;
+      continue;
+    }
+
+    if (isFieldRun(run)) {
+      // Measure field using fallback text (actual value substituted at render time)
+      const fallback = run.fallback || '1';
+      const style: FontStyle = {
+        fontFamily: run.fontFamily ?? DEFAULT_FONT_FAMILY,
+        fontSize: run.fontSize ?? DEFAULT_FONT_SIZE,
+        bold: run.bold,
+        italic: run.italic,
+      };
+      updateMaxFont(style);
+
+      const fieldWidth = measureTextWidth(fallback, style);
+      if (
+        currentLine.width > 0 &&
+        currentLine.width + fieldWidth > currentLine.availableWidth + WIDTH_TOLERANCE
+      ) {
+        startNewLine(runIndex, 0);
+        updateMaxFont(style);
+      }
+
+      currentLine.width += fieldWidth;
       currentLine.toRun = runIndex;
       currentLine.toChar = 1;
       continue;

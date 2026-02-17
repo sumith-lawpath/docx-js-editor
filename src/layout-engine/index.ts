@@ -55,6 +55,43 @@ function getSpacingAfter(block: ParagraphBlock): number {
 }
 
 /**
+ * Apply contextual spacing suppression (OOXML §17.3.1.9).
+ *
+ * When two consecutive paragraph blocks both have `contextualSpacing: true`
+ * and share the same `styleId`, the spaceAfter of the first paragraph and
+ * the spaceBefore of the second paragraph are suppressed (set to 0).
+ *
+ * This mutates the block attrs in-place before layout runs.
+ */
+function applyContextualSpacing(blocks: FlowBlock[]): void {
+  for (let i = 0; i < blocks.length - 1; i++) {
+    const curr = blocks[i];
+    const next = blocks[i + 1];
+
+    if (curr.kind !== 'paragraph' || next.kind !== 'paragraph') continue;
+
+    const currAttrs = curr.attrs;
+    const nextAttrs = next.attrs;
+
+    if (
+      currAttrs?.contextualSpacing &&
+      nextAttrs?.contextualSpacing &&
+      currAttrs.styleId &&
+      currAttrs.styleId === nextAttrs.styleId
+    ) {
+      // Suppress spaceAfter on current paragraph
+      if (currAttrs.spacing) {
+        currAttrs.spacing = { ...currAttrs.spacing, after: 0 };
+      }
+      // Suppress spaceBefore on next paragraph
+      if (nextAttrs.spacing) {
+        nextAttrs.spacing = { ...nextAttrs.spacing, before: 0 };
+      }
+    }
+  }
+}
+
+/**
  * Layout a document: convert blocks + measures into pages with positioned fragments.
  *
  * Algorithm:
@@ -108,7 +145,13 @@ export function layoutDocument(
     pageSize,
     margins,
     columns: options.columns,
+    footnoteReservedHeights: options.footnoteReservedHeights,
   });
+
+  // Apply contextual spacing: suppress spaceBefore/spaceAfter between
+  // consecutive paragraphs that both have contextualSpacing=true and share
+  // the same styleId (OOXML spec 17.3.1.9 / ECMA-376 §17.3.1.9).
+  applyContextualSpacing(blocks);
 
   // Pre-compute keepNext chains for pagination decisions
   const keepNextChains = computeKeepNextChains(blocks);

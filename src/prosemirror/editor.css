@@ -314,6 +314,12 @@
   clear: both;
 }
 
+/* Paragraphs containing only a block image: remove text-indent and center */
+.prosemirror-editor .ProseMirror p:has(> img.docx-image-block:only-child) {
+  text-indent: 0 !important;
+  text-align: center;
+}
+
 /* Clear floats after paragraphs containing floated images */
 .prosemirror-editor .ProseMirror p:has(img.docx-image-float)::after {
   content: '';
@@ -447,7 +453,13 @@
   margin-bottom: 0;
 }
 
-/* Selected cell highlight */
+/* Active cell (cursor is inside this cell) — subtle outline so user knows which cell will be affected */
+.prosemirror-editor .ProseMirror .activeCell {
+  outline: 2px solid rgba(66, 133, 244, 0.5);
+  outline-offset: -2px;
+}
+
+/* Selected cell highlight (multi-cell CellSelection) */
 .prosemirror-editor .ProseMirror .selectedCell {
   background-color: rgba(66, 133, 244, 0.15);
 }
@@ -593,6 +605,11 @@
   z-index: 50;
 }
 
+/* Page content area — show text cursor when hovering over editable content */
+.layout-page-content {
+  cursor: text;
+}
+
 /* Header/footer areas — double-click hint */
 .layout-page-header,
 .layout-page-footer {
@@ -601,7 +618,24 @@
 }
 .layout-page-header:hover,
 .layout-page-footer:hover {
-  background-color: rgba(37, 99, 235, 0.04);
+  background-color: rgba(37, 99, 235, 0.06);
+}
+/* Show "Double-click to edit" hint on hover when area is empty */
+.layout-page-header:empty:hover::after {
+  content: 'Double-click to add header';
+  display: block;
+  text-align: center;
+  color: #9ca3af;
+  font-size: 11px;
+  padding: 4px 0;
+}
+.layout-page-footer:empty:hover::after {
+  content: 'Double-click to add footer';
+  display: block;
+  text-align: center;
+  color: #9ca3af;
+  font-size: 11px;
+  padding: 4px 0;
 }
 
 /* Header/footer editor ProseMirror styles */
@@ -609,10 +643,51 @@
   outline: none;
   min-height: 40px;
   padding: 4px;
-  border: 1px solid var(--doc-border, #e5e7eb);
-  border-radius: 4px;
 }
 .hf-editor-pm .ProseMirror:focus {
-  border-color: var(--doc-primary, #2563eb);
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+  outline: none;
+}
+.hf-editor-pm .ProseMirror p {
+  display: block;
+  margin: 0;
+  padding: 0;
+  min-height: 1em;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  line-height: normal;
+}
+
+/* ============================================================================
+   INLINE HEADER/FOOTER EDITING — Dim body, separator bar, dotted borders
+   ============================================================================ */
+
+/* Dim body content when editing header/footer */
+.paged-editor--hf-editing .layout-page-content {
+  opacity: 0.4;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+/* Dotted border on active header area */
+.paged-editor--editing-header .layout-page-header {
+  border-bottom: 1px dotted #4285f4;
+}
+
+/* Dotted border on active footer area */
+.paged-editor--editing-footer .layout-page-footer {
+  border-top: 1px dotted #4285f4;
+}
+
+/* Hide the original layout-painter content in the area being edited */
+.paged-editor--editing-header .layout-page-header > * {
+  visibility: hidden;
+}
+.paged-editor--editing-footer .layout-page-footer > * {
+  visibility: hidden;
+}
+
+/* Remove hover effect on header/footer when in editing mode */
+.paged-editor--hf-editing .layout-page-header:hover,
+.paged-editor--hf-editing .layout-page-footer:hover {
+  background-color: transparent;
 }
