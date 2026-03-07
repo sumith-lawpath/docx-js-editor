@@ -1,18 +1,35 @@
 /**
  * Main entry point for the DOCX editor application
  */
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
-import { DocxEditor } from './components/DocxEditor';
+import { DocxEditor } from '@eigenpal/docx-js-editor';
 import './index.css';
 
 /**
  * Main App component that provides file loading and editor functionality.
  */
 function App() {
+  const randomAuthor = useMemo(
+    () => `Docx Editor User ${Math.floor(Math.random() * 900) + 100}`,
+    []
+  );
   const [documentBuffer, setDocumentBuffer] = useState<ArrayBuffer | null>(null);
   const [fileName, setFileName] = useState<string>('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Load demo document on mount
+  useEffect(() => {
+    fetch('/docx-editor-demo.docx')
+      .then((res) => (res.ok ? res.arrayBuffer() : null))
+      .then((buf) => {
+        if (buf) {
+          setDocumentBuffer(buf);
+          setFileName('docx-editor-demo.docx');
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Handle file selection
   const handleFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -78,8 +95,8 @@ function App() {
       <div style={{ flex: 1, overflow: 'hidden' }}>
         <DocxEditor
           documentBuffer={documentBuffer}
+          author={randomAuthor}
           showToolbar={true}
-          showVariablePanel={true}
           showZoomControl={true}
           showPageNumbers={true}
           onError={(error) => console.error('Editor error:', error)}

@@ -8,6 +8,14 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Debug screenshots/images in root
+/*.png
+
+# Claude Code (local-only files)
+.claude/settings.local.json
+.claude/CLAUDE.local.md
+.claude/worktrees/
+
 # IDE
 .idea/
 .vscode/
@@ -27,7 +35,8 @@ coverage/
 playwright-report/
 test-results/
 
-# Ralph loop screenshots
+# Ralph loop artifacts
+.ralph/
 screenshots/
 
 # Environment

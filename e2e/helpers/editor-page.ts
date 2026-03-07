@@ -123,8 +123,8 @@ export class EditorPage {
       ? filePath
       : path.join(__dirname, '..', filePath);
 
-    // Find file input and upload
-    const fileInput = this.page.locator('input[type="file"]');
+    // Find the DOCX file input specifically (not the image file input)
+    const fileInput = this.page.locator('input[type="file"][accept=".docx"]');
     await fileInput.setInputFiles(absolutePath);
 
     // Wait for document to load
@@ -1124,7 +1124,8 @@ export class EditorPage {
    */
   async newDocument(): Promise<void> {
     await this.page.locator('button:has-text("New")').click();
-    await this.page.waitForTimeout(200);
+    // Wait for document to be replaced with empty state
+    await this.page.waitForTimeout(500);
   }
 
   // ============================================================================
